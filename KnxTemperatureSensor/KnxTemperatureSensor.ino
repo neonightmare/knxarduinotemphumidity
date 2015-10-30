@@ -3,19 +3,17 @@
 // Sketch for the KNX Temperature sensor
 // Hardware by Matthias Freudenreich
 // Software by Franck Marini
-// Visit http://liwan.fr/KnxWithArduino/ (post on on KNX Temperature sensor) to get all the infos! 
+// Visit http://liwan.fr/KnxWithArduino/ (post on on KNX Temperature sensor) to get all the infos!
 
-// Modification and Test by neonightmare
-#include <SoftwareSerial.h>
-#include <avr/interrupt.h> 
-#include <avr/power.h>
-#include <avr/sleep.h>
+// Modification and Test by neonightmare for Testing on Arduino MEGA
+// for Uno: Change the Serial-Ports!!
+
 #include <KnxDevice.h> // get the library at https://github.com/franckmarini/KnxDevice (use V0.3 or later)
+
 //#include <DHT22.h> // get the library at http://playground.arduino.cc/Main/DHTLib
 #include <dht.h>
 
-int greenPin = 13; // green LED connected to pin 7 with active high
-int SWen= 4;       // PIN UART Switch //
+
 int DHTpin = 2;    // DHT22(2) sensor pin
 
 // DHT22 sensor -> blau:GND(DHTPin_4); violett +5V (DHTPin_1); grün: Signal DHTPin_2
@@ -43,103 +41,53 @@ KnxComObject KnxDevice::_comObjectsList[] =
 const byte KnxDevice::_comObjectsNb = sizeof(_comObjectsList) / sizeof(KnxComObject); // do no change this code
 
 
-//Verbindung zu BCU:
-// 
+//Verbindung zu BCU/TPUART:
+//
+//   o o o o o  -> 10 9 8 7 6
 //   o o o o o  -> 1 2 3 4 5
-//   o o o o o  -> 6 7 8 9 10
-//   6 -> GND // 7 -> Arduino TX // 9 -> Arduino RX // 10 -> +5V
-
-// sleepNow function stops Timer0 and puts the device to sleep
-void sleepNow() {
-   TCCR0B &= 0xFC; // We stop TIMER0 to prevent TIMER0 interrupts, Arduino time functions get time frozen!
-   set_sleep_mode(SLEEP_MODE_IDLE); // Select sleep mode
-   sleep_enable(); // Set sleep enable bit
-   sleep_mode(); // Put the device to sleep
-   // Upon waking up, sketch continues from this point.
-   sleep_disable();
-   TCCR0B |= 0x03; // We restart TIMER0
-}
-
-
-// Set timer1 with 6 seconds period (Arduino clock speed 8MHz)
-// NB : The ideal implementation would be to set timer1 to 60sec, but timer1 counter is not large enough for that
-void timer1Init()
-{
-   noInterrupts(); // disable all interrupts
-  TCCR1A = 0; // initialize timer1 
-  TCCR1B = 0; // initialize timer1 
-  TCNT1  = 0; // initialize timer1 
- // interrupt frequency (Hz) = (Arduino clock speed 8MHz) / (prescaler * (compare match register + 1))
-  OCR1A = 46874;            // compare match register : 1/6Hz = 8MHz / 1024 / (46874 + 1)
-  TCCR1B |= (1 << WGM12);   // CTC mode
-  TCCR1B |= (1 << CS10);   TCCR1B |= (1 << CS12); // clk I/O /1024 prescaling
-  TIMSK1 |= (1 << OCIE1A);  // enable timer compare interrupt
-  interrupts();             // enable all interrupts
-}
-
-static boolean oneMinElapsed = false;
-static boolean oneDHTstart = false;
-
-
-// TIMER1 compare interrupt service routine
-// the function is executed at each TIMER1 interrupt (every 6 sec)
-ISR(TIMER1_COMPA_vect) {
-static byte counter = 0;
-  counter ++;
-  if (counter / 10) /* 1 min = 10 x 6 sec */ 
-  { oneMinElapsed = true; counter = 0; }
-}
+//   1 -> GND // 2 RxD-> to Arduino TX // 4 TxD -> to Arduino RX // 5 -> +5V
 
 
 // Callback function to handle com objects updates
 void knxEvents(byte index) {};
 
 
+unsigned long      lastTime     = 0;
+unsigned long      elapsedTime  = 0;
+unsigned long      waitTime     = 10000; // 10s
+
 void setup(){
-   Serial2.begin(9600); //KNX-Kommunikation
    Serial.begin(115200); //Debug-Kommunikation ->SerialMonitor
+   Serial.println();
    Serial.print("Setup begins");
    Serial.println();
    // Open serial communications and wait for port to open:
-
- 
-   pinMode(SWen, OUTPUT);
-   digitalWrite(SWen, HIGH); 
-   pinMode(greenPin, OUTPUT); 
    pinMode(DHTpin, OUTPUT);
-   digitalWrite(DHTpin, HIGH); 
-   timer1Init();
-   power_adc_disable(); // switch ADC module off (power savings)
-   power_spi_disable(); // switch SPI module off (power savings)
-   power_timer2_disable(); // switch TIMER2 off (power savings)
-   power_twi_disable(); // switch TWI off (power savings)
-   Knx.begin(Serial2, P_ADDR(1,1,30)); // start a KnxDevice session with physical address 1.1.30 on Serial UART
+   digitalWrite(DHTpin, HIGH);
+   Knx.begin(Serial3, P_ADDR(1,1,30)); // start a KnxDevice session with physical address 1.1.30 on Serial UART
    Serial.print("Setup finished");
    Serial.println();
 }
 
 
-void loop(){ 
+void loop(){
   Knx.task();
-  
-  digitalWrite(greenPin, LOW);
-     
-  if (oneMinElapsed) 
-  { // Every min we read humidity and temperature and send values to the KNX bus
-    oneMinElapsed = false;
-    digitalWrite(greenPin, HIGH);
+  Serial.print("loop: ");
+  Serial.println();
+
+  if (elapsedTime >= waitTime)
+  { // Every waitTime we read humidity and temperature and send values to the KNX bus
+
     int chk = DHT.read22(DHT22_PIN);
     Knx.write(0,DHT.temperature);
     Knx.write(1,DHT.humidity);
     Serial.print("Temperatur: ");
     Serial.print(DHT.temperature);
     Serial.println();
-     Serial.print("Feuchtigkeit: ");
+    Serial.print("Feuchtigkeit: ");
     Serial.print(DHT.humidity);
     Serial.println();
-    
+    lastTime = millis();
   }
-  if (!Knx.isActive()) sleepNow(); // No KNX activity so let's have some rest !
-  // we get here when either a timer1 interrupt or an UART RX interrupt has occured
+  elapsedTime = (millis() - lastTime);
 }
-
